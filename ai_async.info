@@ -1,0 +1,6 @@
+name = AI Async
+description = Asynchronous job processing for AI operations.
+backdrop = 1.x
+type = module
+package = AI
+dependencies[] = ai

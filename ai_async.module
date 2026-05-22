@@ -1,0 +1,307 @@
+<?php
+
+
+/**
+ * @file
+ * Background job processing for AI operations.
+ *
+ * Provides a fire-and-forget background job pattern so AI inference calls
+ * (1–10 seconds each) do not block the user's page request.
+ *
+ * Usage:
+ * @code
+ *   // Submit a job — returns immediately with a job ID.
+ *   $job_id = ai_async_submit('mymodule_async_callback', [
+ *     'entity_type' => 'node',
+ *     'entity_id'   => 42,
+ *   ]);
+ *
+ *   // Later (JS polling), check status:
+ *   $job = ai_async_get_job($job_id);
+ * @endcode
+ *
+ * Modules register callbacks via hook_ai_async_callbacks(). Only
+ * registered callbacks can be invoked — unregistered names are rejected.
+ */
+
+// ---------------------------------------------------------------------------
+// Hooks
+// ---------------------------------------------------------------------------
+
+/**
+ * Implements hook_menu().
+ */
+function ai_async_menu() {
+  $items = [];
+
+  // Process endpoint — called by fire-and-forget self-HTTP request.
+  // Authentication is via per-job token, not Backdrop session.
+  $items['ai/async/process/%'] = [
+    'title'           => 'Process async job',
+    'page callback'   => 'ai_async_process_page',
+    'page arguments'  => [3],
+    'access callback' => TRUE,
+    'type'            => MENU_CALLBACK,
+  ];
+
+  // Status endpoint — polled by JS after job submission.
+  $items['ai/async/status/%'] = [
+    'title'           => 'Async job status',
+    'page callback'   => 'ai_async_status_page',
+    'page arguments'  => [3],
+    'access callback' => 'user_is_logged_in',
+    'type'            => MENU_CALLBACK,
+  ];
+
+  return $items;
+}
+
+/**
+ * Implements hook_cron().
+ *
+ * Fallback: drain jobs that are still pending after more than 60 seconds —
+ * which means the fire-and-forget trigger failed (e.g. firewall blocking
+ * loopback HTTP). Also purges finished jobs older than one hour.
+ */
+function ai_async_cron() {
+  // Process stale pending jobs.
+  $stale_cutoff = REQUEST_TIME - 60;
+  $jobs = db_select('ai_async_jobs', 'j')
+    ->fields('j')
+    ->condition('status', 'pending')
+    ->condition('created', $stale_cutoff, '<')
+    ->orderBy('created', 'ASC')
+    ->range(0, 10)
+    ->execute()
+    ->fetchAll();
+
+  if ($jobs) {
+    $worker = new AIAsyncWorker();
+    foreach ($jobs as $row) {
+      $job = new AIAsyncJob($row);
+      // Re-use the process method with the stored token.
+      $worker->process($job->job_id, $job->token);
+    }
+  }
+
+  // Clean up finished jobs older than one hour.
+  db_delete('ai_async_jobs')
+    ->condition('status', ['complete', 'error'], 'IN')
+    ->condition('updated', REQUEST_TIME - 3600, '<')
+    ->execute();
+
+  // Clean up jobs stuck in 'processing' for more than 10 minutes (zombie).
+  db_update('ai_async_jobs')
+    ->fields(['status' => 'error', 'error' => 'Job timed out.', 'updated' => REQUEST_TIME])
+    ->condition('status', 'processing')
+    ->condition('updated', REQUEST_TIME - 600, '<')
+    ->execute();
+}
+
+/**
+ * Implements hook_autoload_info().
+ */
+function ai_async_autoload_info() {
+  return [
+    'AIAsyncJob' => 'includes/AIAsyncJob.inc',
+    'AIAsyncWorker' => 'includes/AIAsyncWorker.inc',
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+/**
+ * Submits a background AI job and triggers immediate processing.
+ *
+ * @param string $callback
+ *   A function name registered via hook_ai_async_callbacks(). The function
+ *   must accept a single $data array and return a JSON-encodable result.
+ * @param array $data
+ *   Input data serialized and passed to the callback.
+ *
+ * @return string|false
+ *   The UUID job ID, or FALSE if the callback is not registered.
+ */
+function ai_async_submit($callback, array $data = []) {
+  $allowed = ai_async_get_allowed_callbacks();
+  if (!isset($allowed[$callback])) {
+    watchdog('ai_async', 'Rejected unregistered callback: @cb', ['@cb' => $callback], WATCHDOG_ERROR);
+    return FALSE;
+  }
+
+  global $user;
+  $job_id = _ai_async_uuid();
+  $token  = backdrop_random_key(32);
+
+  db_insert('ai_async_jobs')
+    ->fields([
+      'job_id'   => $job_id,
+      'callback' => $callback,
+      'data'     => serialize($data),
+      'status'   => 'pending',
+      'token'    => $token,
+      'uid'      => isset($user->uid) ? (int) $user->uid : 0,
+      'created'  => REQUEST_TIME,
+      'updated'  => REQUEST_TIME,
+    ])
+    ->execute();
+
+  _ai_async_trigger($job_id, $token);
+
+  return $job_id;
+}
+
+/**
+ * Loads a job by ID.
+ *
+ * @param string $job_id
+ *
+ * @return AIAsyncJob|false
+ */
+function ai_async_get_job($job_id) {
+  $row = db_select('ai_async_jobs', 'j')
+    ->fields('j')
+    ->condition('job_id', $job_id)
+    ->execute()
+    ->fetchObject();
+
+  return $row ? new AIAsyncJob($row) : FALSE;
+}
+
+/**
+ * Returns all registered callbacks from hook_ai_async_callbacks().
+ *
+ * @return array
+ *   Associative array of callback_name => description.
+ */
+function ai_async_get_allowed_callbacks() {
+  $callbacks = &backdrop_static(__FUNCTION__);
+  if (!isset($callbacks)) {
+    $callbacks = module_invoke_all('ai_async_callbacks');
+  }
+  return $callbacks;
+}
+
+// ---------------------------------------------------------------------------
+// Page callbacks
+// ---------------------------------------------------------------------------
+
+/**
+ * Process endpoint — runs the job and exits.
+ *
+ * Called by fire-and-forget self-HTTP. The caller does not wait for a response.
+ */
+function ai_async_process_page($job_id) {
+  $token = '';
+  if (!empty($_SERVER['HTTP_X_AI_ASYNC_TOKEN'])) {
+    $token = (string) $_SERVER['HTTP_X_AI_ASYNC_TOKEN'];
+  }
+  elseif (isset($_GET['token'])) {
+    // Backward-compatible fallback for older callers.
+    $token = (string) $_GET['token'];
+  }
+  if ($token === '') {
+    backdrop_access_denied();
+    backdrop_exit();
+    return;
+  }
+
+    $worker = new AIAsyncWorker();
+  $worker->process($job_id, $token);
+
+  backdrop_add_http_header('Content-Type', 'application/json');
+  print json_encode(['ok' => TRUE]);
+  backdrop_exit();
+}
+
+/**
+ * Status endpoint — returns job status and result as JSON.
+ *
+ * Polled by ai_async.js. Only accessible to logged-in users.
+ */
+function ai_async_status_page($job_id) {
+  backdrop_add_http_header('Content-Type', 'application/json');
+  backdrop_add_http_header('Cache-Control', 'no-store');
+
+  $job = ai_async_get_job($job_id);
+  if (!$job) {
+    print json_encode(['status' => 'error', 'error' => 'Job not found.']);
+    backdrop_exit();
+    return;
+  }
+
+  // Verify the polling user owns this job.
+  global $user;
+  if ((int) $job->uid !== (int) $user->uid) {
+    print json_encode(['status' => 'error', 'error' => 'Access denied.']);
+    backdrop_exit();
+    return;
+  }
+
+  $response = ['status' => $job->status];
+  if ($job->status === 'complete') {
+    $response['result'] = $job->getResult();
+  }
+  elseif ($job->status === 'error') {
+    $response['error'] = $job->error;
+  }
+
+  print json_encode($response);
+  backdrop_exit();
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Fires a non-blocking self-HTTP request to process a job immediately.
+ *
+ * Uses a 1-second curl timeout so the parent request is not blocked. If the
+ * request fails (e.g. firewall blocking loopback), hook_cron() will drain the
+ * job as a fallback.
+ */
+function _ai_async_trigger($job_id, $token) {
+  if (!function_exists('curl_init')) {
+    return;
+  }
+
+  $url = url('ai/async/process/' . rawurlencode($job_id), [
+    'absolute' => TRUE,
+  ]);
+
+  $ch = curl_init($url);
+  curl_setopt($ch, CURLOPT_RETURNTRANSFER, TRUE);
+  curl_setopt($ch, CURLOPT_TIMEOUT, 1);
+  curl_setopt($ch, CURLOPT_NOSIGNAL, 1);
+  curl_setopt($ch, CURLOPT_HTTPHEADER, [
+    'X-AI-Async-Token: ' . $token,
+  ]);
+  if (settings_get('ai_async_insecure_ssl', FALSE)) {
+    // Opt-in only for local environments using self-signed certificates.
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, FALSE);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, FALSE);
+  }
+  curl_exec($ch);
+  curl_close($ch);
+  // Return value intentionally ignored — cron is the fallback.
+}
+
+/**
+ * Generates a UUID v4.
+ */
+function _ai_async_uuid() {
+  if (function_exists('backdrop_generate_uuid')) {
+    return backdrop_generate_uuid();
+  }
+  // Fallback for environments without the function.
+  return sprintf('%04x%04x-%04x-%04x-%04x-%04x%04x%04x',
+    mt_rand(0, 0xffff), mt_rand(0, 0xffff),
+    mt_rand(0, 0xffff),
+    mt_rand(0, 0x0fff) | 0x4000,
+    mt_rand(0, 0x3fff) | 0x8000,
+    mt_rand(0, 0xffff), mt_rand(0, 0xffff), mt_rand(0, 0xffff)
+  );
+}

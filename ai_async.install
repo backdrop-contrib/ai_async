@@ -1,0 +1,116 @@
+<?php
+
+/**
+ * @file
+ * Install, update, and uninstall functions for ai_async.
+ */
+
+/**
+ * Implements hook_install().
+ */
+function ai_async_install() {
+  if (!module_load_install('ai_upgrade')) { return []; }
+  ai_upgrade_module_install('ai_async');
+}
+
+/**
+ * Implements hook_schema().
+ */
+function ai_async_schema() {
+  $schema['ai_async_jobs'] = array(
+    'description' => 'Stores background AI job requests and their results.',
+    'fields' => array(
+      'job_id' => array(
+        'description' => 'Unique job identifier (UUID).',
+        'type' => 'varchar',
+        'length' => 36,
+        'not null' => TRUE,
+      ),
+      'callback' => array(
+        'description' => 'Whitelisted PHP function name to invoke for this job.',
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '',
+      ),
+      'data' => array(
+        'description' => 'Serialized input data passed to the callback.',
+        'type' => 'text',
+        'size' => 'big',
+        'not null' => FALSE,
+      ),
+      'status' => array(
+        'description' => 'Job status: pending, processing, complete, error.',
+        'type' => 'varchar',
+        'length' => 20,
+        'not null' => TRUE,
+        'default' => 'pending',
+      ),
+      'result' => array(
+        'description' => 'JSON-encoded result data returned by the callback.',
+        'type' => 'text',
+        'size' => 'big',
+        'not null' => FALSE,
+      ),
+      'error' => array(
+        'description' => 'Error message when status is error.',
+        'type' => 'text',
+        'size' => 'normal',
+        'not null' => FALSE,
+      ),
+      'token' => array(
+        'description' => 'Per-job secret token authenticating the process endpoint request.',
+        'type' => 'varchar',
+        'length' => 64,
+        'not null' => TRUE,
+        'default' => '',
+      ),
+      'uid' => array(
+        'description' => 'UID of the user who submitted the job.',
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'created' => array(
+        'description' => 'Unix timestamp when the job was created.',
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'updated' => array(
+        'description' => 'Unix timestamp when the job was last updated.',
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+    ),
+    'primary key' => array('job_id'),
+    'indexes' => array(
+      'status_created' => array('status', 'created'),
+      'uid' => array('uid'),
+    ),
+  );
+  return $schema;
+}
+
+/**
+ * Rename openai_async_jobs table to ai_async_jobs.
+ */
+function ai_async_update_1000() {
+  if (db_table_exists('openai_async_jobs') && !db_table_exists('ai_async_jobs')) {
+    db_rename_table('openai_async_jobs', 'ai_async_jobs');
+  }
+  elseif (db_table_exists('openai_async_jobs')) {
+    db_drop_table('openai_async_jobs');
+  }
+  return t('Renamed openai_async_jobs to ai_async_jobs.');
+}
+
+/**
+ * Implements hook_requirements().
+ */
+function ai_async_requirements($phase) {
+  if (!module_load_install('ai_upgrade')) { return []; }
+  return ai_upgrade_module_requirements($phase, 'ai_async');
+}
