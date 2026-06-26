@@ -37,7 +37,7 @@ class AIAsyncJob {
     }
     // allowed_classes => FALSE turns serialized objects into __PHP_Incomplete_Class
     // rather than returning FALSE, so a top-level is_array() check is not enough.
-    $result = unserialize($this->data, ['allowed_classes' => FALSE]);
+    $result = @unserialize($this->data, ['allowed_classes' => FALSE]);
     if (!is_array($result)) {
       return [];
     }

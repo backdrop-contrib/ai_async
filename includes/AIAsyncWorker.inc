@@ -86,6 +86,10 @@ class AIAsyncWorker {
         $this->fail($job->job_id, 'Submitting user account no longer exists.');
         return;
       }
+      if (empty($account->status)) {
+        $this->fail($job->job_id, 'Submitting user account is blocked.');
+        return;
+      }
       backdrop_save_session(FALSE);
       $GLOBALS['user'] = $account;
       $impersonated = TRUE;
