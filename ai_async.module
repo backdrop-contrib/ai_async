@@ -64,6 +64,9 @@ function ai_async_menu() {
  * loopback HTTP). Also purges finished jobs older than one hour.
  */
 function ai_async_cron() {
+  if (function_exists('set_time_limit')) {
+    @set_time_limit(300);
+  }
   // Process stale pending jobs within a time budget. When the loopback
   // trigger is unavailable, cron is the only consumer — the previous fixed
   // cap of 10 jobs per run let a backlog grow faster than it drained.
@@ -81,6 +84,9 @@ function ai_async_cron() {
       ->fetchAll();
 
     foreach ($jobs as $row) {
+      if (time() >= $deadline) {
+        break 2;
+      }
       $job = new AIAsyncJob($row);
       // Re-use the process method with the stored token. Each call moves the
       // job out of 'pending', so the next fetch never sees the same rows.
