@@ -84,16 +84,15 @@ function ai_async_cron() {
       ->fetchAll();
 
     foreach ($jobs as $row) {
-      if (time() >= $deadline) {
+      $remaining = $deadline - time();
+      if ($remaining <= 0) {
         break 2;
       }
       $job = new AIAsyncJob($row);
       // Re-use the process method with the stored token. Each call moves the
       // job out of 'pending', so the next fetch never sees the same rows.
-      $worker->process($job->job_id, $job->token);
-      if (time() >= $deadline) {
-        break 2;
-      }
+      // Pass remaining seconds so the worker can enforce a hard per-job cap.
+      $worker->process($job->job_id, $job->token, $remaining);
     }
   } while (!empty($jobs) && time() < $deadline);
 
