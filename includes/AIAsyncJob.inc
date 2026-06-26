@@ -32,8 +32,13 @@ class AIAsyncJob {
    * Returns the unserialized input data.
    */
   public function getData() {
-    // Job data is plain arrays; never instantiate objects from stored data.
-    return $this->data ? unserialize($this->data, ['allowed_classes' => FALSE]) : [];
+    if (!$this->data) {
+      return [];
+    }
+    // allowed_classes => FALSE prevents object instantiation; returns FALSE on
+    // failure or if the serialized value contained objects.
+    $result = unserialize($this->data, ['allowed_classes' => FALSE]);
+    return is_array($result) ? $result : [];
   }
 
   /**
