@@ -78,16 +78,18 @@ class AIAsyncWorker {
 
     $original_user = $GLOBALS['user'];
     $impersonated = FALSE;
+    $original_session_save = backdrop_save_session();
     $job_uid = (int) $job->uid;
     if ($job_uid > 0 && (int) $original_user->uid !== $job_uid) {
       $account = user_load($job_uid);
-      if ($account) {
-        backdrop_save_session(FALSE);
-        $GLOBALS['user'] = $account;
-        $impersonated = TRUE;
+      if (!$account) {
+        $this->fail($job->job_id, 'Submitting user account no longer exists.');
+        return;
       }
+      backdrop_save_session(FALSE);
+      $GLOBALS['user'] = $account;
+      $impersonated = TRUE;
     }
-
     try {
       $data = $job->getData();
       $result = call_user_func($job->callback, $data);
@@ -118,7 +120,7 @@ class AIAsyncWorker {
     finally {
       if ($impersonated) {
         $GLOBALS['user'] = $original_user;
-        backdrop_save_session(TRUE);
+        backdrop_save_session($original_session_save);
       }
     }
   }

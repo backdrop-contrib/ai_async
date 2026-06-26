@@ -35,10 +35,19 @@ class AIAsyncJob {
     if (!$this->data) {
       return [];
     }
-    // allowed_classes => FALSE prevents object instantiation; returns FALSE on
-    // failure or if the serialized value contained objects.
+    // allowed_classes => FALSE turns serialized objects into __PHP_Incomplete_Class
+    // rather than returning FALSE, so a top-level is_array() check is not enough.
     $result = unserialize($this->data, ['allowed_classes' => FALSE]);
-    return is_array($result) ? $result : [];
+    if (!is_array($result)) {
+      return [];
+    }
+    $has_objects = FALSE;
+    array_walk_recursive($result, function ($value) use (&$has_objects) {
+      if (is_object($value)) {
+        $has_objects = TRUE;
+      }
+    });
+    return $has_objects ? [] : $result;
   }
 
   /**
