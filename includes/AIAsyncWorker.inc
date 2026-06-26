@@ -57,6 +57,12 @@ class AIAsyncWorker {
 
   /**
    * Runs the job callback and stores the result or error.
+   *
+   * The process endpoint is hit by an unauthenticated loopback request (and
+   * cron runs anonymous too), but the callback must execute with the
+   * submitting user's permissions — agent/tool registries are filtered by
+   * user_access(), so running as anonymous silently strips tools. Impersonate
+   * the stored job uid for the duration of the callback.
    */
   protected function run(AIAsyncJob $job) {
     $allowed = ai_async_get_allowed_callbacks();
@@ -68,6 +74,18 @@ class AIAsyncWorker {
     if (!function_exists($job->callback)) {
       $this->fail($job->job_id, 'Callback function ' . $job->callback . ' does not exist.');
       return;
+    }
+
+    $original_user = $GLOBALS['user'];
+    $impersonated = FALSE;
+    $job_uid = (int) $job->uid;
+    if ($job_uid > 0 && (int) $original_user->uid !== $job_uid) {
+      $account = user_load($job_uid);
+      if ($account) {
+        backdrop_save_session(FALSE);
+        $GLOBALS['user'] = $account;
+        $impersonated = TRUE;
+      }
     }
 
     try {
@@ -96,6 +114,12 @@ class AIAsyncWorker {
         '@id' => $job->job_id,
         '@msg' => $e->getMessage(),
       ], WATCHDOG_ERROR);
+    }
+    finally {
+      if ($impersonated) {
+        $GLOBALS['user'] = $original_user;
+        backdrop_save_session(TRUE);
+      }
     }
   }
 
