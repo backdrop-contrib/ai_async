@@ -138,6 +138,17 @@ function ai_async_submit($callback, array $data = []) {
     return FALSE;
   }
 
+  $has_objects = FALSE;
+  array_walk_recursive($data, function ($value) use (&$has_objects) {
+    if (is_object($value)) {
+      $has_objects = TRUE;
+    }
+  });
+  if ($has_objects) {
+    watchdog('ai_async', 'Rejected job with nested objects in data for callback: @cb', ['@cb' => $callback], WATCHDOG_ERROR);
+    return FALSE;
+  }
+
   global $user;
   $job_id = _ai_async_uuid();
   $token  = backdrop_random_key(32);
