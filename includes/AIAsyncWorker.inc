@@ -77,22 +77,30 @@ class AIAsyncWorker {
     }
 
     $original_user = $GLOBALS['user'];
-    $impersonated = FALSE;
     $original_session_save = backdrop_save_session();
     $job_uid = (int) $job->uid;
-    if ($job_uid > 0 && (int) $original_user->uid !== $job_uid) {
-      $account = user_load($job_uid);
-      if (!$account) {
-        $this->fail($job->job_id, 'Submitting user account no longer exists.');
-        return;
+    if ((int) $original_user->uid !== $job_uid) {
+      if ($job_uid === 0) {
+        // Anonymous submission: switch to the anonymous user object so the
+        // callback cannot inherit a privileged authenticated session.
+        $account = user_load(0);
+        if (!$account) {
+          $account = backdrop_anonymous_user();
+        }
       }
-      if (empty($account->status)) {
-        $this->fail($job->job_id, 'Submitting user account is blocked.');
-        return;
+      else {
+        $account = user_load($job_uid);
+        if (!$account) {
+          $this->fail($job->job_id, 'Submitting user account no longer exists.');
+          return;
+        }
+        if (empty($account->status)) {
+          $this->fail($job->job_id, 'Submitting user account is blocked.');
+          return;
+        }
       }
       backdrop_save_session(FALSE);
       $GLOBALS['user'] = $account;
-      $impersonated = TRUE;
     }
     try {
       $data = $job->getData();
@@ -122,10 +130,8 @@ class AIAsyncWorker {
       ], WATCHDOG_ERROR);
     }
     finally {
-      if ($impersonated) {
-        $GLOBALS['user'] = $original_user;
-        backdrop_save_session($original_session_save);
-      }
+      $GLOBALS['user'] = $original_user;
+      backdrop_save_session($original_session_save);
     }
   }
 
