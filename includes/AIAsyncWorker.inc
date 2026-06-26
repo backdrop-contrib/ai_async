@@ -20,7 +20,7 @@ class AIAsyncWorker {
    * @return bool
    *   TRUE if the job was processed, FALSE if skipped (not pending / bad token).
    */
-  public function process($job_id, $token) {
+  public function process($job_id, $token, $time_limit = 0) {
     $job = ai_async_get_job($job_id);
     if (!$job) {
       return FALSE;
@@ -49,6 +49,12 @@ class AIAsyncWorker {
     if (!$updated) {
       // Already processing or finished — skip silently.
       return FALSE;
+    }
+
+    // Cap this job's wall time to the remaining budget so a single slow job
+    // cannot overrun the cron deadline by more than its own execution time.
+    if ($time_limit > 0 && function_exists('set_time_limit')) {
+      @set_time_limit((int) $time_limit);
     }
 
     $this->run($job);
