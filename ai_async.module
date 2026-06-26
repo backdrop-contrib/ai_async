@@ -64,25 +64,32 @@ function ai_async_menu() {
  * loopback HTTP). Also purges finished jobs older than one hour.
  */
 function ai_async_cron() {
-  // Process stale pending jobs.
+  // Process stale pending jobs within a time budget. When the loopback
+  // trigger is unavailable, cron is the only consumer — the previous fixed
+  // cap of 10 jobs per run let a backlog grow faster than it drained.
   $stale_cutoff = REQUEST_TIME - 60;
-  $jobs = db_select('ai_async_jobs', 'j')
-    ->fields('j')
-    ->condition('status', 'pending')
-    ->condition('created', $stale_cutoff, '<')
-    ->orderBy('created', 'ASC')
-    ->range(0, 10)
-    ->execute()
-    ->fetchAll();
+  $deadline = time() + 45;
+  $worker = new AIAsyncWorker();
+  do {
+    $jobs = db_select('ai_async_jobs', 'j')
+      ->fields('j')
+      ->condition('status', 'pending')
+      ->condition('created', $stale_cutoff, '<')
+      ->orderBy('created', 'ASC')
+      ->range(0, 10)
+      ->execute()
+      ->fetchAll();
 
-  if ($jobs) {
-    $worker = new AIAsyncWorker();
     foreach ($jobs as $row) {
       $job = new AIAsyncJob($row);
-      // Re-use the process method with the stored token.
+      // Re-use the process method with the stored token. Each call moves the
+      // job out of 'pending', so the next fetch never sees the same rows.
       $worker->process($job->job_id, $job->token);
+      if (time() >= $deadline) {
+        break 2;
+      }
     }
-  }
+  } while (!empty($jobs) && time() < $deadline);
 
   // Clean up finished jobs older than one hour.
   db_delete('ai_async_jobs')
@@ -208,7 +215,14 @@ function ai_async_process_page($job_id) {
     return;
   }
 
-    $worker = new AIAsyncWorker();
+  // The trigger request disconnects after 1 second (fire-and-forget);
+  // keep running so the AI call is not aborted mid-job.
+  ignore_user_abort(TRUE);
+  if (function_exists('set_time_limit')) {
+    @set_time_limit(300);
+  }
+
+  $worker = new AIAsyncWorker();
   $worker->process($job_id, $token);
 
   backdrop_add_http_header('Content-Type', 'application/json');
