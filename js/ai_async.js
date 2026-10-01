@@ -7,6 +7,7 @@
   'use strict';
 
   window.AIAsync = window.AIAsync || {};
+  window.AiAsync = window.AIAsync;
 
   /**
    * Polls the status endpoint for a background job until it completes.
