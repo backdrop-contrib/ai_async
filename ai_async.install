@@ -95,16 +95,14 @@ function ai_async_schema() {
 }
 
 /**
- * Rename openai_async_jobs table to ai_async_jobs.
+ * Move legacy openai_async_jobs rows into ai_async_jobs.
  */
 function ai_async_update_1000() {
-  if (db_table_exists('openai_async_jobs') && !db_table_exists('ai_async_jobs')) {
-    db_rename_table('openai_async_jobs', 'ai_async_jobs');
+  if (!module_load_install('ai_upgrade')) {
+    return t('AI Upgrade helpers unavailable; legacy async jobs not migrated.');
   }
-  elseif (db_table_exists('openai_async_jobs')) {
-    db_drop_table('openai_async_jobs');
-  }
-  return t('Renamed openai_async_jobs to ai_async_jobs.');
+  $result = ai_upgrade_migrate_table('openai_async_jobs', 'ai_async_jobs', ['job_id'], !module_exists('openai_async'));
+  return t('Legacy async jobs: !summary.', ['!summary' => ai_upgrade_table_results_summary([$result])]);
 }
 
 /**
