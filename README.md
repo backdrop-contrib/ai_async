@@ -5,6 +5,7 @@ requests do not block the user-facing page request.
 
 ## Requirements
 
+- PHP 8.2 or later
 - `ai` module
 
 ## Installation
