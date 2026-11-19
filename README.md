@@ -1,7 +1,7 @@
 # AI Async
 
-Provides background job processing for AI operations so longer-running AI
-requests do not block the user-facing page request.
+Run slow AI requests in a background job. Integrating modules can return a job
+ID to the browser, then check for results while the job runs.
 
 ## Requirements
 
@@ -18,7 +18,12 @@ requests do not block the user-facing page request.
 1. Enable the module.
 2. Register allowed callbacks with `hook_ai_async_callbacks()`.
 3. Submit jobs with `ai_async_submit()` and poll status with
-   `ai_async_get_job()` or the built-in status endpoint.
+   `ai_async_get_job()` or the built-in status endpoint. Browser polling
+   requires the signed-in user who submitted the job.
+
+## Documentation
+
+Find setup, examples, and troubleshooting in the [project wiki](https://github.com/backdrop-contrib/ai_async/wiki).
 
 ## Issues
 
